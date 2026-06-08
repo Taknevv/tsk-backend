@@ -1,6 +1,6 @@
 import os
 import tempfile
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import List
 
 from fastapi import FastAPI, Depends, HTTPException, status
@@ -8,15 +8,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from fastapi.responses import FileResponse
 from jose import jwt, JWTError
-from passlib.context import CryptContext
 from sqlalchemy.orm import Session
-from pydantic import BaseModel, EmailStr
 from dotenv import load_dotenv
 
 from database import get_db, engine
 from models import Base, User, Coil, Inspection, Inspector
 from schemas import UserCreate, UserOut, Token, CoilCreate, CoilOut, InspectionCreate, InspectionOut
-from auth import get_password_hash, verify_password, create_access_token, SECRET_KEY, ALGORITHM, ACCESS_TOKEN_EXPIRE_MINUTES
+from auth import get_password_hash, verify_password, create_access_token, SECRET_KEY, ALGORITHM
 
 # openpyxl for Excel export
 from openpyxl import Workbook
