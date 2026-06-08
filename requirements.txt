@@ -9,3 +9,4 @@ pydantic
 openpyxl
 python-dotenv
 email-validator
+werkzeug
