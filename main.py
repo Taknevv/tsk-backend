@@ -123,7 +123,7 @@ def read_inspections(skip: int = 0, limit: int = 100, db: Session = Depends(get_
     inspections = db.query(Inspection).offset(skip).limit(limit).all()
     return inspections
 
-# ---------- Export endpoint (with AI sheets built-in) ----------
+# ---------- Export endpoint (with AI sheets built‑in) ----------
 @app.get("/export")
 def export_results(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     coils = db.query(Coil).order_by(Coil.created_at.desc()).all()
@@ -161,12 +161,14 @@ def export_results(current_user: User = Depends(get_current_user), db: Session =
     for ins in inspectors:
         ws4.append([ins.inspector_id, ins.name, ", ".join(ins.certified_lines) if ins.certified_lines else "", ins.shift_preference])
 
-    # ----- AI Sheets A1 to A10 (dummy data) -----
+    # -------------------- AI Sheets A1 to A10 --------------------
+    # A1 Demand Forecast
     a1 = wb.create_sheet("A1 Demand Forecast")
     a1.append(["Hour", "Forecasted Defects"])
     for i in range(1, 25):
         a1.append([i, round(i * 0.5, 2)])
 
+    # A2 Anomaly Detection
     a2 = wb.create_sheet("A2 Anomaly Detection")
     a2.append(["Coil ID", "Anomaly Score"])
     a2.append(["CGL-001", 0.12])
@@ -174,6 +176,7 @@ def export_results(current_user: User = Depends(get_current_user), db: Session =
     a2.append(["CAL-001", 0.03])
     a2.append(["RCL-001", 0.45])
 
+    # A3 RL Policy
     a3 = wb.create_sheet("A3 RL Policy")
     a3.append(["Fatigue Level", "Time on line (min)", "Recommended Action"])
     a3.append(["Low (1-3)", "0-10", "Continue"])
@@ -181,34 +184,40 @@ def export_results(current_user: User = Depends(get_current_user), db: Session =
     a3.append(["High (7-8)", "20-30", "Rotate"])
     a3.append(["Critical (9-10)", "30+", "Rotate Immediately"])
 
+    # A4 Fatigue Predict
     a4 = wb.create_sheet("A4 Fatigue Predict")
     a4.append(["Hour", "Predicted Fatigue (1-10)"])
     for i in range(1, 13):
         a4.append([i, round(5 + i * 0.2, 1)])
 
+    # A5 DP Scheduling
     a5 = wb.create_sheet("A5 DP Scheduling")
     a5.append(["Shift", "Inspectors Required"])
     a5.append(["Morning", 4])
     a5.append(["Afternoon", 3])
     a5.append(["Night", 2])
 
+    # A6 Genetic Algorithm
     a6 = wb.create_sheet("A6 Genetic Algorithm")
     a6.append(["Line", "Assigned Inspectors", "Optimal?"])
     a6.append(["CGL", 2, "Yes"])
     a6.append(["CAL", 2, "Yes"])
     a6.append(["RCL", 2, "Yes"])
 
+    # A7 CUSUM Control
     a7 = wb.create_sheet("A7 CUSUM Control")
     a7.append(["Sample", "CUSUM Statistic"])
     for i in range(1, 25):
         a7.append([i, round(i * 0.1, 2)])
 
+    # A8 Monte Carlo
     a8 = wb.create_sheet("A8 Monte Carlo")
     a8.append(["Risk Category", "Probability"])
     a8.append(["Low Risk", 0.70])
     a8.append(["Medium Risk", 0.20])
     a8.append(["High Risk", 0.10])
 
+    # A9 Markov Chain
     a9 = wb.create_sheet("A9 Markov Chain")
     a9.append(["Inspector State", "Steady-State Probability (%)"])
     a9.append(["Active", 55])
@@ -217,12 +226,13 @@ def export_results(current_user: User = Depends(get_current_user), db: Session =
     a9.append(["Absent", 3])
     a9.append(["Training", 2])
 
+    # A10 Live Dashboard
     a10 = wb.create_sheet("A10 Live Dashboard")
     a10.append(["Line", "OEE (%)", "Utilization (%)", "Alerts"])
     a10.append(["CGL", 87.5, 92.0, "OK"])
     a10.append(["CAL", 91.2, 88.5, "OK"])
     a10.append(["RCL", 79.3, 85.0, "Fatigue Alert"])
-    # -------------------------------------------------
+    # -------------------------------------------------------------
 
     # Save to temporary file
     with tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx") as tmp:
