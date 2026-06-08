@@ -1,1 +1,7 @@
-
+fastapi
+uvicorn[standard]
+python-multipart
+openpyxl
+pandas
+numpy
+scikit-learn
