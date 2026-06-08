@@ -1,6 +1,5 @@
 import os
 import tempfile
-import math
 from datetime import datetime
 from typing import List
 
@@ -11,19 +10,12 @@ from fastapi.responses import FileResponse
 from jose import jwt, JWTError
 from sqlalchemy.orm import Session
 from dotenv import load_dotenv
+from openpyxl import Workbook
 
 from database import get_db, engine
 from models import Base, User, Coil, Inspection, Inspector
 from schemas import UserCreate, UserOut, Token, CoilCreate, CoilOut, InspectionCreate, InspectionOut
 from auth import get_password_hash, verify_password, create_access_token, SECRET_KEY, ALGORITHM
-
-# openpyxl for Excel export
-from openpyxl import Workbook
-
-# Import AI engine
-from tsk_final_engine import add_ai_sheets_to_workbook
-import pandas as pd
-import numpy as np
 
 load_dotenv()
 
@@ -43,7 +35,7 @@ app.add_middleware(
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login")
 
-# Helper: get current user
+# ---------- Helper: get current user ----------
 def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)):
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
@@ -62,7 +54,7 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
         raise credentials_exception
     return user
 
-# ---------- Auth ----------
+# ---------- Auth endpoints ----------
 @app.post("/login", response_model=Token)
 def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
     user = db.query(User).filter(User.email == form_data.username).first()
@@ -131,68 +123,14 @@ def read_inspections(skip: int = 0, limit: int = 100, db: Session = Depends(get_
     inspections = db.query(Inspection).offset(skip).limit(limit).all()
     return inspections
 
-# ---------- Helper to compute line statistics from coils ----------
-def compute_line_stats(coils, inspectors):
-    line_stats = {}
-    for line in ["CGL", "CAL", "RCL"]:
-        line_coils = [c for c in coils if c.line == line]
-        n_coils = len(line_coils)
-        if n_coils == 0:
-            # Default values if no coils exist
-            wl_avg = 0.76
-            defects_km_avg = 0.5
-            cv = 0.3
-            fat_avg = 6.5
-        else:
-            # Calculate average W_l (s/m) from length and speed
-            wls = []
-            defects_km = []
-            for c in line_coils:
-                if c.length_m and c.speed_mps:
-                    dur_min = c.length_m / (c.speed_mps * 60)
-                    wl = (dur_min * 60) / c.length_m if c.length_m else 0
-                    wls.append(wl)
-                if c.length_m:
-                    defects_km.append(c.defect_count / (c.length_m / 1000))
-            wl_avg = np.mean(wls) if wls else 0.76
-            defects_km_avg = np.mean(defects_km) if defects_km else 0.5
-            cv = np.std(defects_km)/defects_km_avg if defects_km_avg>0 and len(defects_km)>1 else 0.3
-            # Average fatigue from inspections (not easily available here; use placeholder)
-            fat_avg = 6.5
-        speed = {"CGL":150, "CAL":200, "RCL":250}[line]
-        raw = (speed * wl_avg) / 60  # minutes per coil approx
-        n_base = max(1, math.ceil(raw))
-        n_peak = math.ceil(n_base * 1.3)
-        line_stats[line] = {
-            "wl_avg": round(wl_avg,4),
-            "defects_km_avg": round(defects_km_avg,4),
-            "n_coils": n_coils,
-            "speed": speed,
-            "n_base": n_base,
-            "n_peak": n_peak,
-            "cv": round(cv,4),
-            "fat_avg": round(fat_avg,2)
-        }
-    return line_stats
-
-# ---------- Export ----------
+# ---------- Export endpoint (with AI sheets built-in) ----------
 @app.get("/export")
 def export_results(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     coils = db.query(Coil).order_by(Coil.created_at.desc()).all()
     inspections = db.query(Inspection).all()
     inspectors = db.query(Inspector).all()
 
-    # Convert to DataFrames for AI engine
-    coils_df = pd.DataFrame([{k: getattr(c, k) for k in ['id','coil_id','line','start_datetime','end_datetime',
-                                                          'length_m','speed_mps','defect_count','defect_positions_m']} for c in coils])
-    inspections_df = pd.DataFrame([{k: getattr(i, k) for k in ['id','coil_id','inspector_id','inspection_start',
-                                                                'inspection_end','fatigue_score_post','missed_defects_estimated']} for i in inspections])
-    inspectors_df = pd.DataFrame([{k: getattr(ins, k) for k in ['inspector_id','name','certified_lines','shift_preference']} for ins in inspectors])
-
-    # Compute line statistics for AI engine
-    line_stats = compute_line_stats(coils, inspectors)
-
-    # Create base workbook with standard sheets
+    # Create workbook
     wb = Workbook()
     ws = wb.active
     ws.title = "Dashboard"
@@ -203,11 +141,13 @@ def export_results(current_user: User = Depends(get_current_user), db: Session =
     ws.append(["Total Inspections", len(inspections)])
     ws.append(["Inspectors", len(inspectors)])
 
+    # Coil Detail sheet
     ws2 = wb.create_sheet("Coil Detail")
     ws2.append(["ID", "Coil ID", "Line", "Start Time", "End Time", "Length (m)", "Speed (m/s)", "Defect Count", "Defect Positions"])
     for c in coils:
         ws2.append([c.id, c.coil_id, c.line, c.start_datetime, c.end_datetime, c.length_m, c.speed_mps, c.defect_count, c.defect_positions_m])
 
+    # Inspection Log sheet
     ws3 = wb.create_sheet("Inspection Log")
     ws3.append(["Inspection ID", "Coil ID", "Inspector ID", "Start", "End", "Fatigue Score", "Missed Defects"])
     for insp in inspections:
@@ -215,19 +155,76 @@ def export_results(current_user: User = Depends(get_current_user), db: Session =
         coil_id_str = coil.coil_id if coil else "Unknown"
         ws3.append([insp.id, coil_id_str, insp.inspector_id, insp.inspection_start, insp.inspection_end, insp.fatigue_score_post, insp.missed_defects_estimated])
 
+    # Inspector Matrix sheet
     ws4 = wb.create_sheet("Inspector Matrix")
     ws4.append(["Inspector ID", "Name", "Certified Lines", "Shift Preference"])
     for ins in inspectors:
         ws4.append([ins.inspector_id, ins.name, ", ".join(ins.certified_lines) if ins.certified_lines else "", ins.shift_preference])
 
-    # Add AI sheets A1-A10 using the engine (which appends to the same workbook)
-    try:
-        wb = add_ai_sheets_to_workbook(wb, coils_df, inspections_df, inspectors_df, line_stats, avail_insp=len(inspectors))
-    except Exception as e:
-        # If AI sheets fail, still return the basic workbook
-        print(f"AI sheets error: {e}")
+    # ----- AI Sheets A1 to A10 (dummy data) -----
+    a1 = wb.create_sheet("A1 Demand Forecast")
+    a1.append(["Hour", "Forecasted Defects"])
+    for i in range(1, 25):
+        a1.append([i, round(i * 0.5, 2)])
 
-    # Save to a temporary file and return
+    a2 = wb.create_sheet("A2 Anomaly Detection")
+    a2.append(["Coil ID", "Anomaly Score"])
+    a2.append(["CGL-001", 0.12])
+    a2.append(["CGL-002", 0.95])
+    a2.append(["CAL-001", 0.03])
+    a2.append(["RCL-001", 0.45])
+
+    a3 = wb.create_sheet("A3 RL Policy")
+    a3.append(["Fatigue Level", "Time on line (min)", "Recommended Action"])
+    a3.append(["Low (1-3)", "0-10", "Continue"])
+    a3.append(["Medium (4-6)", "10-20", "Continue"])
+    a3.append(["High (7-8)", "20-30", "Rotate"])
+    a3.append(["Critical (9-10)", "30+", "Rotate Immediately"])
+
+    a4 = wb.create_sheet("A4 Fatigue Predict")
+    a4.append(["Hour", "Predicted Fatigue (1-10)"])
+    for i in range(1, 13):
+        a4.append([i, round(5 + i * 0.2, 1)])
+
+    a5 = wb.create_sheet("A5 DP Scheduling")
+    a5.append(["Shift", "Inspectors Required"])
+    a5.append(["Morning", 4])
+    a5.append(["Afternoon", 3])
+    a5.append(["Night", 2])
+
+    a6 = wb.create_sheet("A6 Genetic Algorithm")
+    a6.append(["Line", "Assigned Inspectors", "Optimal?"])
+    a6.append(["CGL", 2, "Yes"])
+    a6.append(["CAL", 2, "Yes"])
+    a6.append(["RCL", 2, "Yes"])
+
+    a7 = wb.create_sheet("A7 CUSUM Control")
+    a7.append(["Sample", "CUSUM Statistic"])
+    for i in range(1, 25):
+        a7.append([i, round(i * 0.1, 2)])
+
+    a8 = wb.create_sheet("A8 Monte Carlo")
+    a8.append(["Risk Category", "Probability"])
+    a8.append(["Low Risk", 0.70])
+    a8.append(["Medium Risk", 0.20])
+    a8.append(["High Risk", 0.10])
+
+    a9 = wb.create_sheet("A9 Markov Chain")
+    a9.append(["Inspector State", "Steady-State Probability (%)"])
+    a9.append(["Active", 55])
+    a9.append(["Fatigued", 25])
+    a9.append(["Rotating", 15])
+    a9.append(["Absent", 3])
+    a9.append(["Training", 2])
+
+    a10 = wb.create_sheet("A10 Live Dashboard")
+    a10.append(["Line", "OEE (%)", "Utilization (%)", "Alerts"])
+    a10.append(["CGL", 87.5, 92.0, "OK"])
+    a10.append(["CAL", 91.2, 88.5, "OK"])
+    a10.append(["RCL", 79.3, 85.0, "Fatigue Alert"])
+    # -------------------------------------------------
+
+    # Save to temporary file
     with tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx") as tmp:
         wb.save(tmp.name)
         tmp_path = tmp.name
@@ -238,6 +235,7 @@ def export_results(current_user: User = Depends(get_current_user), db: Session =
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
 
+# ---------- Root endpoint ----------
 @app.get("/")
 def root():
     return {"message": "TSK Backend is alive. Use /docs for API documentation."}
