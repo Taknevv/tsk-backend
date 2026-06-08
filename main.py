@@ -1,5 +1,6 @@
 import os
 import tempfile
+import math
 from datetime import datetime
 from typing import List
 
@@ -18,6 +19,11 @@ from auth import get_password_hash, verify_password, create_access_token, SECRET
 
 # openpyxl for Excel export
 from openpyxl import Workbook
+
+# Import AI engine
+from tsk_final_engine import add_ai_sheets_to_workbook
+import pandas as pd
+import numpy as np
 
 load_dotenv()
 
@@ -125,6 +131,50 @@ def read_inspections(skip: int = 0, limit: int = 100, db: Session = Depends(get_
     inspections = db.query(Inspection).offset(skip).limit(limit).all()
     return inspections
 
+# ---------- Helper to compute line statistics from coils ----------
+def compute_line_stats(coils, inspectors):
+    line_stats = {}
+    for line in ["CGL", "CAL", "RCL"]:
+        line_coils = [c for c in coils if c.line == line]
+        n_coils = len(line_coils)
+        if n_coils == 0:
+            # Default values if no coils exist
+            wl_avg = 0.76
+            defects_km_avg = 0.5
+            cv = 0.3
+            fat_avg = 6.5
+        else:
+            # Calculate average W_l (s/m) from length and speed
+            wls = []
+            defects_km = []
+            for c in line_coils:
+                if c.length_m and c.speed_mps:
+                    dur_min = c.length_m / (c.speed_mps * 60)
+                    wl = (dur_min * 60) / c.length_m if c.length_m else 0
+                    wls.append(wl)
+                if c.length_m:
+                    defects_km.append(c.defect_count / (c.length_m / 1000))
+            wl_avg = np.mean(wls) if wls else 0.76
+            defects_km_avg = np.mean(defects_km) if defects_km else 0.5
+            cv = np.std(defects_km)/defects_km_avg if defects_km_avg>0 and len(defects_km)>1 else 0.3
+            # Average fatigue from inspections (not easily available here; use placeholder)
+            fat_avg = 6.5
+        speed = {"CGL":150, "CAL":200, "RCL":250}[line]
+        raw = (speed * wl_avg) / 60  # minutes per coil approx
+        n_base = max(1, math.ceil(raw))
+        n_peak = math.ceil(n_base * 1.3)
+        line_stats[line] = {
+            "wl_avg": round(wl_avg,4),
+            "defects_km_avg": round(defects_km_avg,4),
+            "n_coils": n_coils,
+            "speed": speed,
+            "n_base": n_base,
+            "n_peak": n_peak,
+            "cv": round(cv,4),
+            "fat_avg": round(fat_avg,2)
+        }
+    return line_stats
+
 # ---------- Export ----------
 @app.get("/export")
 def export_results(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
@@ -132,6 +182,17 @@ def export_results(current_user: User = Depends(get_current_user), db: Session =
     inspections = db.query(Inspection).all()
     inspectors = db.query(Inspector).all()
 
+    # Convert to DataFrames for AI engine
+    coils_df = pd.DataFrame([{k: getattr(c, k) for k in ['id','coil_id','line','start_datetime','end_datetime',
+                                                          'length_m','speed_mps','defect_count','defect_positions_m']} for c in coils])
+    inspections_df = pd.DataFrame([{k: getattr(i, k) for k in ['id','coil_id','inspector_id','inspection_start',
+                                                                'inspection_end','fatigue_score_post','missed_defects_estimated']} for i in inspections])
+    inspectors_df = pd.DataFrame([{k: getattr(ins, k) for k in ['inspector_id','name','certified_lines','shift_preference']} for ins in inspectors])
+
+    # Compute line statistics for AI engine
+    line_stats = compute_line_stats(coils, inspectors)
+
+    # Create base workbook with standard sheets
     wb = Workbook()
     ws = wb.active
     ws.title = "Dashboard"
@@ -159,6 +220,14 @@ def export_results(current_user: User = Depends(get_current_user), db: Session =
     for ins in inspectors:
         ws4.append([ins.inspector_id, ins.name, ", ".join(ins.certified_lines) if ins.certified_lines else "", ins.shift_preference])
 
+    # Add AI sheets A1-A10 using the engine (which appends to the same workbook)
+    try:
+        wb = add_ai_sheets_to_workbook(wb, coils_df, inspections_df, inspectors_df, line_stats, avail_insp=len(inspectors))
+    except Exception as e:
+        # If AI sheets fail, still return the basic workbook
+        print(f"AI sheets error: {e}")
+
+    # Save to a temporary file and return
     with tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx") as tmp:
         wb.save(tmp.name)
         tmp_path = tmp.name
