@@ -130,7 +130,6 @@ def export_results(current_user: User = Depends(get_current_user), db: Session =
     inspections = db.query(Inspection).all()
     inspectors = db.query(Inspector).all()
 
-    # Create workbook
     wb = Workbook()
     ws = wb.active
     ws.title = "Dashboard"
@@ -141,13 +140,11 @@ def export_results(current_user: User = Depends(get_current_user), db: Session =
     ws.append(["Total Inspections", len(inspections)])
     ws.append(["Inspectors", len(inspectors)])
 
-    # Coil Detail sheet
     ws2 = wb.create_sheet("Coil Detail")
     ws2.append(["ID", "Coil ID", "Line", "Start Time", "End Time", "Length (m)", "Speed (m/s)", "Defect Count", "Defect Positions"])
     for c in coils:
         ws2.append([c.id, c.coil_id, c.line, c.start_datetime, c.end_datetime, c.length_m, c.speed_mps, c.defect_count, c.defect_positions_m])
 
-    # Inspection Log sheet
     ws3 = wb.create_sheet("Inspection Log")
     ws3.append(["Inspection ID", "Coil ID", "Inspector ID", "Start", "End", "Fatigue Score", "Missed Defects"])
     for insp in inspections:
@@ -155,20 +152,17 @@ def export_results(current_user: User = Depends(get_current_user), db: Session =
         coil_id_str = coil.coil_id if coil else "Unknown"
         ws3.append([insp.id, coil_id_str, insp.inspector_id, insp.inspection_start, insp.inspection_end, insp.fatigue_score_post, insp.missed_defects_estimated])
 
-    # Inspector Matrix sheet
     ws4 = wb.create_sheet("Inspector Matrix")
     ws4.append(["Inspector ID", "Name", "Certified Lines", "Shift Preference"])
     for ins in inspectors:
         ws4.append([ins.inspector_id, ins.name, ", ".join(ins.certified_lines) if ins.certified_lines else "", ins.shift_preference])
 
-    # -------------------- AI Sheets A1 to A10 --------------------
-    # A1 Demand Forecast
+    # AI Sheets A1-A10 (dummy data)
     a1 = wb.create_sheet("A1 Demand Forecast")
     a1.append(["Hour", "Forecasted Defects"])
     for i in range(1, 25):
         a1.append([i, round(i * 0.5, 2)])
 
-    # A2 Anomaly Detection
     a2 = wb.create_sheet("A2 Anomaly Detection")
     a2.append(["Coil ID", "Anomaly Score"])
     a2.append(["CGL-001", 0.12])
@@ -176,7 +170,6 @@ def export_results(current_user: User = Depends(get_current_user), db: Session =
     a2.append(["CAL-001", 0.03])
     a2.append(["RCL-001", 0.45])
 
-    # A3 RL Policy
     a3 = wb.create_sheet("A3 RL Policy")
     a3.append(["Fatigue Level", "Time on line (min)", "Recommended Action"])
     a3.append(["Low (1-3)", "0-10", "Continue"])
@@ -184,40 +177,34 @@ def export_results(current_user: User = Depends(get_current_user), db: Session =
     a3.append(["High (7-8)", "20-30", "Rotate"])
     a3.append(["Critical (9-10)", "30+", "Rotate Immediately"])
 
-    # A4 Fatigue Predict
     a4 = wb.create_sheet("A4 Fatigue Predict")
     a4.append(["Hour", "Predicted Fatigue (1-10)"])
     for i in range(1, 13):
         a4.append([i, round(5 + i * 0.2, 1)])
 
-    # A5 DP Scheduling
     a5 = wb.create_sheet("A5 DP Scheduling")
     a5.append(["Shift", "Inspectors Required"])
     a5.append(["Morning", 4])
     a5.append(["Afternoon", 3])
     a5.append(["Night", 2])
 
-    # A6 Genetic Algorithm
     a6 = wb.create_sheet("A6 Genetic Algorithm")
     a6.append(["Line", "Assigned Inspectors", "Optimal?"])
     a6.append(["CGL", 2, "Yes"])
     a6.append(["CAL", 2, "Yes"])
     a6.append(["RCL", 2, "Yes"])
 
-    # A7 CUSUM Control
     a7 = wb.create_sheet("A7 CUSUM Control")
     a7.append(["Sample", "CUSUM Statistic"])
     for i in range(1, 25):
         a7.append([i, round(i * 0.1, 2)])
 
-    # A8 Monte Carlo
     a8 = wb.create_sheet("A8 Monte Carlo")
     a8.append(["Risk Category", "Probability"])
     a8.append(["Low Risk", 0.70])
     a8.append(["Medium Risk", 0.20])
     a8.append(["High Risk", 0.10])
 
-    # A9 Markov Chain
     a9 = wb.create_sheet("A9 Markov Chain")
     a9.append(["Inspector State", "Steady-State Probability (%)"])
     a9.append(["Active", 55])
@@ -226,15 +213,12 @@ def export_results(current_user: User = Depends(get_current_user), db: Session =
     a9.append(["Absent", 3])
     a9.append(["Training", 2])
 
-    # A10 Live Dashboard
     a10 = wb.create_sheet("A10 Live Dashboard")
     a10.append(["Line", "OEE (%)", "Utilization (%)", "Alerts"])
     a10.append(["CGL", 87.5, 92.0, "OK"])
     a10.append(["CAL", 91.2, 88.5, "OK"])
     a10.append(["RCL", 79.3, 85.0, "Fatigue Alert"])
-    # -------------------------------------------------------------
 
-    # Save to temporary file
     with tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx") as tmp:
         wb.save(tmp.name)
         tmp_path = tmp.name
@@ -244,6 +228,19 @@ def export_results(current_user: User = Depends(get_current_user), db: Session =
         filename=f"TSK_Final_Results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
+
+# ---------- AI Results JSON Endpoints (for Flutter app) ----------
+@app.get("/api/a1/forecast")
+def get_a1_forecast(current_user: User = Depends(get_current_user)):
+    """Return A1 demand forecast (24h) as JSON"""
+    forecast = [{"hour": i, "defects": round(i * 0.5, 2)} for i in range(1, 25)]
+    return forecast
+
+@app.get("/api/a4/fatigue_predict")
+def get_a4_fatigue_predict(current_user: User = Depends(get_current_user)):
+    """Return 12‑hour fatigue prediction as JSON"""
+    pred = [{"hour": i, "fatigue": round(5 + i * 0.2, 1)} for i in range(1, 13)]
+    return pred
 
 # ---------- Root endpoint ----------
 @app.get("/")
