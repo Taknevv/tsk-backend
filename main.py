@@ -16,6 +16,11 @@ from dotenv import load_dotenv
 from openpyxl import Workbook
 
 from database import get_db, engine
+from excel_styles import (
+    build_dashboard, build_coil_detail, build_fatigue_log,
+    build_inspector_matrix, build_inspector_calc, build_change_log,
+    no_grid
+)
 from models import Base, User, Coil, Inspection, Inspector
 from schemas import UserCreate, UserOut, Token, CoilCreate, CoilOut, InspectionCreate, InspectionOut
 from auth import get_password_hash, verify_password, create_access_token, SECRET_KEY, ALGORITHM
@@ -177,7 +182,7 @@ def compute_line_stats(coils, inspections):
         }
     return line_stats
 
-# ---------- Export endpoint (role‑based, with AI sheets) ----------
+# ---------- Export endpoint (styled, role‑based, with AI sheets) ----------
 @app.get("/export")
 def export_results(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     # Fetch data based on role
@@ -203,39 +208,21 @@ def export_results(current_user: User = Depends(get_current_user), db: Session =
     # Compute line statistics (respects filtered coils)
     line_stats = compute_line_stats(coils, inspections)
 
-    # Create workbook
+    # Create workbook and remove the default sheet (we'll build all sheets from scratch)
     wb = Workbook()
-    ws = wb.active
-    ws.title = "Dashboard"
-    ws.append(["TSK COIL INSPECTION - DASHBOARD"])
-    ws.append([f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"])
-    ws.append([])
-    ws.append(["Total Coils", len(coils)])
-    ws.append(["Total Inspections", len(inspections)])
-    ws.append(["Inspectors", len(inspectors)])
+    default_sheet = wb.active
+    wb.remove(default_sheet)   # remove the empty sheet created by default
+    no_grid(wb.active)         # optional: hide gridlines for the first sheet we'll add
 
-    # Coil Detail sheet (only if coils exist)
-    if coils:
-        ws2 = wb.create_sheet("Coil Detail")
-        ws2.append(["ID", "Coil ID", "Line", "Start Time", "End Time", "Length (m)", "Speed (m/s)", "Defect Count", "Defect Positions"])
-        for c in coils:
-            ws2.append([c.id, c.coil_id, c.line, c.start_datetime, c.end_datetime, c.length_m, c.speed_mps, c.defect_count, c.defect_positions_m])
+    # Build styled sheets
+    build_dashboard(wb, coils, inspections, inspectors, line_stats)
+    build_coil_detail(wb, coils)
+    build_fatigue_log(wb, inspections, coils)
+    build_inspector_matrix(wb, inspectors)
+    build_inspector_calc(wb, line_stats)
+    build_change_log(wb, len(coils))
 
-    # Inspection Log sheet
-    ws3 = wb.create_sheet("Inspection Log")
-    ws3.append(["Inspection ID", "Coil ID", "Inspector ID", "Start", "End", "Fatigue Score", "Missed Defects"])
-    for insp in inspections:
-        coil = db.query(Coil).filter(Coil.id == insp.coil_id).first()
-        coil_id_str = coil.coil_id if coil else "Unknown"
-        ws3.append([insp.id, coil_id_str, insp.inspector_id, insp.inspection_start, insp.inspection_end, insp.fatigue_score_post, insp.missed_defects_estimated])
-
-    # Inspector Matrix sheet
-    ws4 = wb.create_sheet("Inspector Matrix")
-    ws4.append(["Inspector ID", "Name", "Certified Lines", "Shift Preference"])
-    for ins in inspectors:
-        ws4.append([ins.inspector_id, ins.name, ", ".join(ins.certified_lines) if ins.certified_lines else "", ins.shift_preference])
-
-    # Add AI sheets (using the engine – it already works with filtered data)
+    # Add AI sheets (A1‑A10) using your existing engine
     try:
         from ai_engine import add_ai_sheets_to_workbook
         wb = add_ai_sheets_to_workbook(wb, coils_df, inspections_df, inspectors_df, line_stats, avail_insp=len(inspectors))
@@ -260,7 +247,6 @@ def export_results(current_user: User = Depends(get_current_user), db: Session =
 @app.get("/api/a1/forecast")
 def get_a1_forecast(current_user: User = Depends(get_current_user)):
     """Global 24‑hour demand forecast (for UA)"""
-    # Simple increasing forecast – replace with real calculation if needed
     forecast = [{"hour": i, "defects": round(i * 0.5, 2)} for i in range(1, 25)]
     return forecast
 
@@ -286,7 +272,7 @@ def get_a4_fatigue_predict(current_user: User = Depends(get_current_user)):
 
 @app.get("/api/a4/fatigue_predict/inspector")
 def get_fatigue_for_inspector(inspector_id: str, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    """Return fatigue prediction for a specific inspector. Accessible only to the inspector themselves or UA."""
+    """Return fatigue prediction for a specific inspector."""
     if current_user.role != 'ua' and current_user.inspector_id != inspector_id:
         raise HTTPException(status_code=403, detail="Not authorized")
     inspections = db.query(Inspection).filter(Inspection.inspector_id == inspector_id).order_by(Inspection.inspection_start).all()
