@@ -1,13 +1,8 @@
-"""
-AI Engine for TSK Coil Inspection
-Uses real database data (via DataFrames) to compute A1‑A10 results.
-"""
 import math
 import random
 import numpy as np
 from collections import defaultdict
 
-# ========== Helper functions (same as original) ==========
 def holt_winters(series, alpha=0.3, beta=0.1, steps=24):
     if len(series) < 2:
         return series[:], [0]*steps
@@ -193,7 +188,6 @@ def markov(line_stats):
     return results
 
 def live_dashboard_sim(line_stats, avail_insp):
-    # Simple simulation for dashboard (can be replaced with real data later)
     import datetime
     now = datetime.datetime.now()
     log = []
@@ -239,14 +233,7 @@ def live_dashboard_sim(line_stats, avail_insp):
     p2 = [a for a in alerts if "P2" in a["tier"]]
     return log, p1, p2, summary
 
-# ========== Main function: add all AI sheets to workbook ==========
 def add_ai_sheets_to_workbook(wb, coils_df, inspections_df, inspectors_df, line_stats, avail_insp=3):
-    """
-    Adds A1‑A10 sheets using real data from DataFrames.
-    """
-    # For each line, build hourly defect series (using actual coil data if available)
-    # For simplicity, we create synthetic series based on line_stats.
-    # (You can later replace with real hourly aggregated data.)
     series = {}
     for ln in ["CGL", "CAL", "RCL"]:
         s = line_stats[ln]
@@ -260,16 +247,13 @@ def add_ai_sheets_to_workbook(wb, coils_df, inspections_df, inspectors_df, line_
         series[ln] = {"defects": def_s, "fatigue": fat_s, "speed": spd_s,
                       "base_def": base_def, "base_fat": base_fat, "cv": cv}
 
-    # ----- A1 Demand Forecast -----
     ws = wb.create_sheet("A1 Demand Forecast")
     ws.append(["LINE: CGL – 48h actual + 24h ahead"])
     ws.append(["Hr", "Actual Def", "Smoothed", "EWMA", "", "Fc Hr", "Def Forecast"])
     sm, fc = holt_winters(series["CGL"]["defects"])
     for i in range(24):
         ws.append([i+1, round(series["CGL"]["defects"][i],4), sm[i], ewma(series["CGL"]["defects"])[i], "", f"h+{i+1}", round(fc[i],4)])
-    # (Add similar for CAL and RCL – can be extended)
 
-    # ----- A2 Anomaly Detection -----
     ws = wb.create_sheet("A2 Anomaly Detection")
     ws.append(["LINE: CGL – Z‑Score + IQR"])
     ws.append(["Hr", "Defect", "Z‑Score", "Z‑Flag", "IQR Flag"])
@@ -278,14 +262,12 @@ def add_ai_sheets_to_workbook(wb, coils_df, inspections_df, inspectors_df, line_
     for i in range(24):
         ws.append([i+1, round(series["CGL"]["defects"][i],4), zr[i][1], "YES" if zr[i][0] else "no", "YES" if iq[i] else "no"])
 
-    # ----- A3 RL Policy -----
     ws = wb.create_sheet("A3 RL Q-Learning")
     policy, avg_rew, avg_rot = q_learning()
     ws.append(["Line", "Fatigue Bin", "Time On", "Policy", "Confidence"])
     for p in policy[:10]:
         ws.append([p["line"], p["fatigue_bin"], p["time_bin"], p["policy"], p["confidence"]])
 
-    # ----- A4 Fatigue Predict -----
     ws = wb.create_sheet("A4 Fatigue Predict")
     ws.append(["LINE: CGL – Polynomial Regression"])
     ws.append(["Hr", "Actual", "Fitted", "Forecast"])
@@ -294,20 +276,17 @@ def add_ai_sheets_to_workbook(wb, coils_df, inspections_df, inspectors_df, line_
     for i in range(24):
         ws.append([i+1, round(y[i],3), fitted[i], round(fc12[i],3) if i<len(fc12) else ""])
 
-    # ----- A5 DP Scheduling (simplified with line_stats) -----
     ws = wb.create_sheet("A5 DP Scheduling")
     ws.append(["Inspectors Available", "Efficiency %", "Morning", "Afternoon", "Night"])
     ws.append([3, "14.4%", "3/9", "0/8", "0/6"])
     ws.append([6, "28.9%", "6/9", "0/8", "0/6"])
 
-    # ----- A6 Genetic Algorithm (simplified) -----
     ws = wb.create_sheet("A6 Genetic Algorithm")
     ws.append(["Shift", "Line", "Assigned", "Demand", "Coverage %"])
     ws.append(["Morning", "CGL", "3", "3", "100%"])
     ws.append(["Morning", "CAL", "3", "3", "100%"])
     ws.append(["Morning", "RCL", "3", "3", "100%"])
 
-    # ----- A7 CUSUM Control -----
     ws = wb.create_sheet("A7 CUSUM Control")
     ws.append(["LINE: CGL"])
     cus = cusum(series["CGL"]["defects"])
@@ -316,7 +295,6 @@ def add_ai_sheets_to_workbook(wb, coils_df, inspections_df, inspectors_df, line_
     for i in range(24):
         ws.append([i+1, round(cus["series"][i],4), cus["cp"][i], cus["cn"][i]])
 
-    # ----- A8 Monte Carlo -----
     ws = wb.create_sheet("A8 Monte Carlo")
     mc = monte_carlo(line_stats, n=3000)
     ws.append(["Metric", "CGL", "CAL", "RCL"])
@@ -324,7 +302,6 @@ def add_ai_sheets_to_workbook(wb, coils_df, inspections_df, inspectors_df, line_
     ws.append(["P(Coverage <80%) %", mc["CGL"]["p_miss"], mc["CAL"]["p_miss"], mc["RCL"]["p_miss"]])
     ws.append(["Risk Rating", mc["CGL"]["risk"], mc["CAL"]["risk"], mc["RCL"]["risk"]])
 
-    # ----- A9 Markov Chain -----
     ws = wb.create_sheet("A9 Markov Chain")
     mk = markov(line_stats)
     ws.append(["LINE: CGL Steady‑State"])
@@ -332,7 +309,6 @@ def add_ai_sheets_to_workbook(wb, coils_df, inspections_df, inspectors_df, line_
     for st, pct in mk["CGL"]["ss"].items():
         ws.append([st, pct])
 
-    # ----- A10 Live Dashboard -----
     ws = wb.create_sheet("A10 Live Dashboard")
     log, p1, p2, summary = live_dashboard_sim(line_stats, avail_insp=avail_insp)
     ws.append(["Line", "Avg OEE%", "Avg Util%", "Avg Fatigue", "SLA Compliance%"])
