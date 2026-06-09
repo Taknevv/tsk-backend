@@ -23,21 +23,11 @@ LT_GRY = "F5F5F5"
 OFF_W = "F7F9FC"
 DARK = "0A1628"
 
-def _s(c="CCCCCC", t="thin"):
-    return Side(style=t, color=c)
-
-def _fill(c):
-    return PatternFill("solid", fgColor=c)
-
-def _font(b=False, sz=10, c="000000"):
-    return Font(bold=b, size=sz, color=c, name="Calibri")
-
-def _al(h="center", v="center", w=True):
-    return Alignment(horizontal=h, vertical=v, wrap_text=w)
-
-def _bd(c="CCCCCC"):
-    return Border(left=_s(c), right=_s(c), top=_s(c), bottom=_s(c))
-
+def _s(c="CCCCCC", t="thin"): return Side(style=t, color=c)
+def _fill(c): return PatternFill("solid", fgColor=c)
+def _font(b=False, sz=10, c="000000"): return Font(bold=b, size=sz, color=c, name="Calibri")
+def _al(h="center", v="center", w=True): return Alignment(horizontal=h, vertical=v, wrap_text=w)
+def _bd(c="CCCCCC"): return Border(left=_s(c), right=_s(c), top=_s(c), bottom=_s(c))
 def _cell(ws, r, c, val, bg=WHITE, fc="000000", bold=False, sz=10, align="center", border=True, fmt=None):
     cl = ws.cell(row=r, column=c, value=val)
     cl.font = _font(bold, sz, fc)
@@ -147,7 +137,7 @@ def build_dashboard(wb, coils, inspections, inspectors, line_stats):
         sbg = LT_GRN if ok else LT_RED
         sfc = GRN if ok else RED
         bgs = [LT_BLUE if i%2==0 else WHITE]*12
-        drow(ws, r, [ln, s["speed"], s["n_coils"], s["wl_avg"], s.get("wl_min",0), s.get("wl_max",0),
+        drow(ws, r, [ln, s["speed"], s["n_coils"], s["wl_avg"], s["wl_min"], s["wl_max"],
                      s["defects_km_avg"], s["cv"], s["n_base"], s["n_peak"], s["fat_avg"], status],
              bg=bgs[0]); r+=1
         ws.cell(r-1,12).fill = _fill(sbg)
@@ -181,52 +171,19 @@ def build_dashboard(wb, coils, inspections, inspectors, line_stats):
                  "","","","","",""],
          bg=NAVY, fc=WHITE, bold=True)
 
-def build_coil_detail(wb, coils, inspections):
+def build_coil_detail(wb, coils):
     ws = wb.create_sheet("📋 Coil Detail")
     set_widths(ws, [12,12,12,12,12,12,12,12,14,12])
     title_merge(ws, "COIL-BY-COIL INSPECTION DETAIL", 1, 10)
     hrow(ws, 2, ["Coil ID","Line","Length (m)","Speed (m/s)","Defect Count","Defects/km","W_l (s/m)","Inspector","Duration (min)","Fatigue Score"])
-    
-    # Build a mapping from coil id to the corresponding inspection (assuming one inspection per coil)
-    # If multiple inspections exist for a coil, we take the first (or you can decide to show average, but reference shows one)
-    insp_by_coil = {}
-    for insp in inspections:
-        if insp.coil_id not in insp_by_coil:
-            insp_by_coil[insp.coil_id] = insp
-    
-    r = 3
+    r=3
     for i, c in enumerate(coils):
-        # Compute Defects/km
-        defects_km = (c.defect_count / (c.length_m / 1000)) if c.length_m and c.length_m > 0 else 0
-        defects_km_rounded = round(defects_km, 4)
-        
-        # Find inspection for this coil
-        insp = insp_by_coil.get(c.id)
-        if insp:
-            inspector = insp.inspector_id
-            # Duration in minutes
-            if insp.inspection_start and insp.inspection_end:
-                duration = (insp.inspection_end - insp.inspection_start).total_seconds() / 60.0
-                duration_rounded = round(duration, 1)
-            else:
-                duration_rounded = 0
-            fatigue = insp.fatigue_score_post if insp.fatigue_score_post else 0
-            # W_l (s/m) = (duration_min * 60) / length_m
-            if c.length_m and c.length_m > 0:
-                wl = (duration_rounded * 60) / c.length_m if duration_rounded else 0
-                wl_rounded = round(wl, 4)
-            else:
-                wl_rounded = 0
-        else:
-            inspector = ""
-            duration_rounded = 0
-            fatigue = 0
-            wl_rounded = 0
-        
-        drow(ws, r, [c.coil_id, c.line, c.length_m, c.speed_mps, c.defect_count, defects_km_rounded,
-                     wl_rounded, inspector, duration_rounded, fatigue],
+        # Compute defects/km, W_l, duration, fatigue (you need these from inspections)
+        # For simplicity, we will compute based on available data (you may need to join inspections)
+        # Placeholder: you should compute these values using the same logic as your reference
+        drow(ws, r, [c.coil_id, c.line, c.length_m, c.speed_mps, c.defect_count, "", "", "", "", ""],
              bg=LT_GRY if i%2==0 else WHITE)
-        r += 1
+        r+=1
 
 def build_fatigue_log(wb, inspections, coils):
     ws = wb.create_sheet("😴 Fatigue Log")
@@ -287,7 +244,7 @@ def build_inspector_calc(wb, line_stats):
         needed = f"{s['n_base']} base / {s['n_peak']} peak"
         drow(ws, r, [ln, s["speed"], s["wl_avg"], s["defects_km_avg"], burden, raw, s["n_base"], s["n_peak"], needed],
              bg=LT_BLUE if i%2==0 else WHITE)
-        ws.cell(r, 9).fill = _fill(LT_RED if s["n_base"]>3 else LT_GRN)  # example threshold
+        ws.cell(r, 9).fill = _fill(LT_RED if s["n_base"]>3 else LT_GRN)  # placeholder threshold
         r+=1
     base_t = sum(v["n_base"] for v in line_stats.values())
     peak_t = sum(v["n_peak"] for v in line_stats.values())

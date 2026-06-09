@@ -216,7 +216,7 @@ def export_results(current_user: User = Depends(get_current_user), db: Session =
 
     # Build styled sheets
     build_dashboard(wb, coils, inspections, inspectors, line_stats)
-    build_coil_detail(wb, coils)
+    build_coil_detail(wb, coils, inspections)
     build_fatigue_log(wb, inspections, coils)
     build_inspector_matrix(wb, inspectors)
     build_inspector_calc(wb, line_stats)
