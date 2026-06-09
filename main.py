@@ -1,5 +1,6 @@
 import os
 import tempfile
+import math
 import numpy as np
 import pandas as pd
 from datetime import datetime
@@ -122,25 +123,18 @@ def create_inspection(inspection: InspectionCreate, db: Session = Depends(get_db
 
 @app.get("/inspections", response_model=List[InspectionOut])
 def read_inspections(skip: int = 0, limit: int = 100, db: Session = Depends(get_db), current_user = Depends(get_current_user)):
-    inspections = db.query(Inspection).offset(skip).limit(limit).all()
+    if current_user.role == 'ua':
+        inspections = db.query(Inspection).offset(skip).limit(limit).all()
+    elif current_user.role.endswith('_admin'):
+        line = current_user.role.split('_')[0].upper()
+        inspections = db.query(Inspection).join(Coil).filter(Coil.line == line).offset(skip).limit(limit).all()
+    else:
+        # inspector sees only their own inspections
+        inspections = db.query(Inspection).filter(Inspection.inspector_id == current_user.inspector_id).offset(skip).limit(limit).all()
     return inspections
 
-# ---------- Export endpoint (with AI sheets built‑in) ----------
-@app.get("/export")
-def export_results(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    # Fetch data from database
-    coils = db.query(Coil).order_by(Coil.created_at.desc()).all()
-    inspections = db.query(Inspection).all()
-    inspectors = db.query(Inspector).all()
-
-    # Convert to pandas DataFrames
-    import pandas as pd
-    coils_df = pd.DataFrame([c.__dict__ for c in coils])
-    inspections_df = pd.DataFrame([i.__dict__ for i in inspections])
-    inspectors_df = pd.DataFrame([ins.__dict__ for ins in inspectors])
-
-    # Compute line_stats (same as before)
-    from math import ceil
+# ---------- Helper to compute line statistics ----------
+def compute_line_stats(coils, inspections):
     line_stats = {}
     for line in ["CGL", "CAL", "RCL"]:
         line_coils = [c for c in coils if c.line == line]
@@ -163,11 +157,14 @@ def export_results(current_user: User = Depends(get_current_user), db: Session =
             wl_avg = np.mean(wls) if wls else 0.76
             defects_km_avg = np.mean(defects_km) if defects_km else 0.5
             cv = np.std(defects_km) / defects_km_avg if defects_km_avg > 0 and len(defects_km) > 1 else 0.3
-            fat_avg = 6.5  # you can compute from inspections
+            # Compute average fatigue from inspections on this line
+            line_inspections = [i for i in inspections if i.coil_id in [c.id for c in line_coils]]
+            fats = [i.fatigue_score_post for i in line_inspections if i.fatigue_score_post]
+            fat_avg = np.mean(fats) if fats else 6.5
         speed = {"CGL": 150, "CAL": 200, "RCL": 250}[line]
         raw = (speed * wl_avg) / 60
-        n_base = max(1, ceil(raw))
-        n_peak = ceil(n_base * 1.3)
+        n_base = max(1, math.ceil(raw))
+        n_peak = math.ceil(n_base * 1.3)
         line_stats[line] = {
             "wl_avg": round(wl_avg, 4),
             "defects_km_avg": round(defects_km_avg, 4),
@@ -178,8 +175,35 @@ def export_results(current_user: User = Depends(get_current_user), db: Session =
             "cv": round(cv, 4),
             "fat_avg": round(fat_avg, 2)
         }
+    return line_stats
 
-    # Create the basic workbook (Dashboard, Coil Detail, etc.)
+# ---------- Export endpoint (role‑based, with AI sheets) ----------
+@app.get("/export")
+def export_results(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    # Fetch data based on role
+    if current_user.role == 'ua':
+        coils = db.query(Coil).order_by(Coil.created_at.desc()).all()
+        inspections = db.query(Inspection).all()
+        inspectors = db.query(Inspector).all()
+    elif current_user.role.endswith('_admin'):
+        line = current_user.role.split('_')[0].upper()
+        coils = db.query(Coil).filter(Coil.line == line).order_by(Coil.created_at.desc()).all()
+        inspections = db.query(Inspection).join(Coil).filter(Coil.line == line).all()
+        inspectors = db.query(Inspector).all()
+    else:  # inspector
+        coils = []  # inspectors don't see coils
+        inspections = db.query(Inspection).filter(Inspection.inspector_id == current_user.inspector_id).all()
+        inspectors = db.query(Inspector).filter(Inspector.inspector_id == current_user.inspector_id).all()
+
+    # Convert to DataFrames for AI engine
+    coils_df = pd.DataFrame([c.__dict__ for c in coils]) if coils else pd.DataFrame()
+    inspections_df = pd.DataFrame([i.__dict__ for i in inspections]) if inspections else pd.DataFrame()
+    inspectors_df = pd.DataFrame([ins.__dict__ for ins in inspectors]) if inspectors else pd.DataFrame()
+
+    # Compute line statistics (respects filtered coils)
+    line_stats = compute_line_stats(coils, inspections)
+
+    # Create workbook
     wb = Workbook()
     ws = wb.active
     ws.title = "Dashboard"
@@ -190,11 +214,14 @@ def export_results(current_user: User = Depends(get_current_user), db: Session =
     ws.append(["Total Inspections", len(inspections)])
     ws.append(["Inspectors", len(inspectors)])
 
-    ws2 = wb.create_sheet("Coil Detail")
-    ws2.append(["ID", "Coil ID", "Line", "Start Time", "End Time", "Length (m)", "Speed (m/s)", "Defect Count", "Defect Positions"])
-    for c in coils:
-        ws2.append([c.id, c.coil_id, c.line, c.start_datetime, c.end_datetime, c.length_m, c.speed_mps, c.defect_count, c.defect_positions_m])
+    # Coil Detail sheet (only if coils exist)
+    if coils:
+        ws2 = wb.create_sheet("Coil Detail")
+        ws2.append(["ID", "Coil ID", "Line", "Start Time", "End Time", "Length (m)", "Speed (m/s)", "Defect Count", "Defect Positions"])
+        for c in coils:
+            ws2.append([c.id, c.coil_id, c.line, c.start_datetime, c.end_datetime, c.length_m, c.speed_mps, c.defect_count, c.defect_positions_m])
 
+    # Inspection Log sheet
     ws3 = wb.create_sheet("Inspection Log")
     ws3.append(["Inspection ID", "Coil ID", "Inspector ID", "Start", "End", "Fatigue Score", "Missed Defects"])
     for insp in inspections:
@@ -202,14 +229,21 @@ def export_results(current_user: User = Depends(get_current_user), db: Session =
         coil_id_str = coil.coil_id if coil else "Unknown"
         ws3.append([insp.id, coil_id_str, insp.inspector_id, insp.inspection_start, insp.inspection_end, insp.fatigue_score_post, insp.missed_defects_estimated])
 
+    # Inspector Matrix sheet
     ws4 = wb.create_sheet("Inspector Matrix")
     ws4.append(["Inspector ID", "Name", "Certified Lines", "Shift Preference"])
     for ins in inspectors:
         ws4.append([ins.inspector_id, ins.name, ", ".join(ins.certified_lines) if ins.certified_lines else "", ins.shift_preference])
 
-    # ----- Add AI sheets using real engine -----
-    from ai_engine import add_ai_sheets_to_workbook
-    wb = add_ai_sheets_to_workbook(wb, coils_df, inspections_df, inspectors_df, line_stats, avail_insp=len(inspectors))
+    # Add AI sheets (using the engine – it already works with filtered data)
+    try:
+        from ai_engine import add_ai_sheets_to_workbook
+        wb = add_ai_sheets_to_workbook(wb, coils_df, inspections_df, inspectors_df, line_stats, avail_insp=len(inspectors))
+    except Exception as e:
+        # If AI sheets fail, add an error sheet for debugging (optional)
+        err_ws = wb.create_sheet("AI Error")
+        err_ws.append(["Error", str(e)])
+        print(f"AI sheets error: {e}")
 
     # Save to temporary file and return
     with tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx") as tmp:
@@ -222,17 +256,45 @@ def export_results(current_user: User = Depends(get_current_user), db: Session =
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
 
-# ---------- AI Results JSON Endpoints (for Flutter app) ----------
+# ---------- Filtered AI JSON endpoints for Flutter app ----------
 @app.get("/api/a1/forecast")
 def get_a1_forecast(current_user: User = Depends(get_current_user)):
-    """Return A1 demand forecast (24h) as JSON"""
+    """Global 24‑hour demand forecast (for UA)"""
+    # Simple increasing forecast – replace with real calculation if needed
     forecast = [{"hour": i, "defects": round(i * 0.5, 2)} for i in range(1, 25)]
+    return forecast
+
+@app.get("/api/a1/forecast/line")
+def get_a1_forecast_by_line(line: str, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """Return forecast for a specific line. Accessible only to UA or line admin of that line."""
+    if current_user.role != 'ua' and current_user.line != line:
+        raise HTTPException(status_code=403, detail="Not authorized for this line")
+    coils = db.query(Coil).filter(Coil.line == line).all()
+    if not coils:
+        defects_km = [0.5] * 24
+    else:
+        avg_def_km = np.mean([c.defect_count / (c.length_m/1000) for c in coils if c.length_m]) or 0.5
+        defects_km = [round(avg_def_km * (1 + 0.02 * i), 4) for i in range(24)]
+    forecast = [{"hour": i+1, "defects": defects_km[i]} for i in range(24)]
     return forecast
 
 @app.get("/api/a4/fatigue_predict")
 def get_a4_fatigue_predict(current_user: User = Depends(get_current_user)):
-    """Return 12‑hour fatigue prediction as JSON"""
+    """Global 12‑hour fatigue prediction (for UA and line admins)"""
     pred = [{"hour": i, "fatigue": round(5 + i * 0.2, 1)} for i in range(1, 13)]
+    return pred
+
+@app.get("/api/a4/fatigue_predict/inspector")
+def get_fatigue_for_inspector(inspector_id: str, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """Return fatigue prediction for a specific inspector. Accessible only to the inspector themselves or UA."""
+    if current_user.role != 'ua' and current_user.inspector_id != inspector_id:
+        raise HTTPException(status_code=403, detail="Not authorized")
+    inspections = db.query(Inspection).filter(Inspection.inspector_id == inspector_id).order_by(Inspection.inspection_start).all()
+    if not inspections:
+        pred = [{"hour": i+1, "fatigue": round(5 + i * 0.2, 1)} for i in range(12)]
+    else:
+        last_fatigue = inspections[-1].fatigue_score_post if inspections[-1].fatigue_score_post else 5
+        pred = [{"hour": i+1, "fatigue": round(min(10, last_fatigue + i * 0.1), 1)} for i in range(12)]
     return pred
 
 # ---------- Root endpoint ----------
