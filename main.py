@@ -283,6 +283,27 @@ def get_fatigue_for_inspector(inspector_id: str, current_user: User = Depends(ge
         pred = [{"hour": i+1, "fatigue": round(min(10, last_fatigue + i * 0.1), 1)} for i in range(12)]
     return pred
 
+@app.get("/admin/users")
+def list_users(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    if current_user.role != 'ua':
+        raise HTTPException(status_code=403, detail="Not authorized")
+    users = db.query(User).all()
+    # Exclude hashed_password from response
+    return [{"id": u.id, "email": u.email, "role": u.role, "line": u.line, "inspector_id": u.inspector_id, "name": u.name} for u in users]
+
+@app.delete("/admin/users/{user_id}")
+def delete_user(user_id: int, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    if current_user.role != 'ua':
+        raise HTTPException(status_code=403, detail="Not authorized")
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    if user.id == current_user.id:
+        raise HTTPException(status_code=400, detail="Cannot delete yourself")
+    db.delete(user)
+    db.commit()
+    return {"message": "User deleted"}
+
 # ---------- Root endpoint ----------
 @app.get("/")
 def root():
