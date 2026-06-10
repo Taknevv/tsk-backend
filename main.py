@@ -295,6 +295,59 @@ def get_live_oee(current_user: User = Depends(get_current_user)):
         "timestamp": datetime.now().isoformat()
     }
 
+# ---------- Analytics endpoints (new) ----------
+@app.get("/analytics/defect_pareto")
+def defect_pareto(start_date: str, end_date: str, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """
+    Returns top defect types by total quantity within a date range.
+    Query parameters: start_date (YYYY-MM-DD), end_date (YYYY-MM-DD)
+    """
+    start = datetime.strptime(start_date, "%Y-%m-%d")
+    end = datetime.strptime(end_date, "%Y-%m-%d") + timedelta(days=1)
+    # Join inspection_defects with inspections and defect_types
+    results = (
+        db.query(DefectType.name, func.sum(InspectionDefect.quantity).label("total"))
+        .join(InspectionDefect, DefectType.id == InspectionDefect.defect_type_id)
+        .join(Inspection, Inspection.id == InspectionDefect.inspection_id)
+        .filter(Inspection.inspection_start >= start, Inspection.inspection_start < end)
+        .group_by(DefectType.name)
+        .order_by(func.sum(InspectionDefect.quantity).desc())
+        .all()
+    )
+    return [{"name": r.name, "count": r.total} for r in results]
+
+@app.get("/analytics/line_efficiency")
+def line_efficiency(start_date: str, end_date: str, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """
+    Simulated line efficiency (OEE) per line per day.
+    For real data, you would have a table of daily OEE. Here we generate random values.
+    """
+    start = datetime.strptime(start_date, "%Y-%m-%d")
+    end = datetime.strptime(end_date, "%Y-%m-%d") + timedelta(days=1)
+    days = (end - start).days
+    result = {}
+    for line in ["CGL", "CAL", "RCL"]:
+        daily = []
+        for i in range(days):
+            date = start + timedelta(days=i)
+            oee = round(random.uniform(65, 95), 1)  # simulated OEE
+            daily.append({"date": date.isoformat(), "oee": oee})
+        result[line] = daily
+    return result
+
+@app.get("/api/a11/predict")
+def predict_defect_probability(coil_id: str, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """
+    Predict defect probability for a given coil (dummy implementation).
+    In production, replace with a trained ML model.
+    """
+    coil = db.query(Coil).filter(Coil.coil_id == coil_id).first()
+    if not coil:
+        raise HTTPException(404, "Coil not found")
+    # Dummy: random probability between 0 and 1
+    prob = round(random.uniform(0, 1), 2)
+    return {"coil_id": coil_id, "defect_probability": prob}
+
 # ---------- Helper for line stats (used in export) ----------
 def compute_line_stats(coils, inspections):
     line_stats = {}
