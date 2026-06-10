@@ -72,3 +72,17 @@ class AuditLog(Base):
     table_name = Column(String)
     record_id = Column(Integer)
     timestamp = Column(TIMESTAMP, server_default=func.now())
+
+class DefectType(Base):
+    __tablename__ = "defect_types"
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, nullable=False)
+    severity = Column(Integer)
+    line = Column(String)
+
+class InspectionDefect(Base):
+    __tablename__ = "inspection_defects"
+    inspection_id = Column(Integer, ForeignKey("inspections.id"), primary_key=True)
+    defect_type_id = Column(Integer, ForeignKey("defect_types.id"), primary_key=True)
+    position_m = Column(Numeric)
+    quantity = Column(Integer, default=1)
