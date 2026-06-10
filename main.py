@@ -212,7 +212,7 @@ def export_results(current_user: User = Depends(get_current_user), db: Session =
     wb = Workbook()
     default_sheet = wb.active
     wb.remove(default_sheet)
-    no_grid(wb.active)   # optional
+    #no_grid(wb.active)   # optional
 
     # Build styled sheets
     build_dashboard(wb, coils, inspections, inspectors, line_stats)
