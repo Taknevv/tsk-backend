@@ -4,7 +4,7 @@ import math
 import numpy as np
 import pandas as pd
 from datetime import datetime
-from typing import List
+from typing import List, Optional
 
 from fastapi import FastAPI, Depends, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
@@ -14,6 +14,7 @@ from jose import jwt, JWTError
 from sqlalchemy.orm import Session
 from dotenv import load_dotenv
 from openpyxl import Workbook
+from pydantic import BaseModel
 
 from database import get_db, engine
 from excel_styles import (
@@ -21,13 +22,26 @@ from excel_styles import (
     build_inspector_matrix, build_inspector_calc, build_change_log,
     no_grid
 )
-from models import Base, User, Coil, Inspection, Inspector
+from models import Base, User, Coil, Inspection, Inspector, DefectType, InspectionDefect
 from schemas import UserCreate, UserOut, Token, CoilCreate, CoilOut, InspectionCreate, InspectionOut
 from auth import get_password_hash, verify_password, create_access_token, SECRET_KEY, ALGORITHM
 
+# Firebase Admin
+import firebase_admin
+from firebase_admin import credentials, messaging
+
 load_dotenv()
 
-# Create tables
+# Initialize Firebase Admin (if credentials are provided)
+cred_path = os.getenv("FIREBASE_CREDENTIALS")
+if cred_path and os.path.exists(cred_path):
+    cred = credentials.Certificate(cred_path)
+    firebase_admin.initialize_app(cred)
+    print("Firebase Admin initialized")
+else:
+    print("Firebase credentials not found – push notifications disabled")
+
+# Create tables (including new defect tables)
 Base.metadata.create_all(bind=engine)
 
 app = FastAPI(title="TSK Coil Backend")
@@ -93,6 +107,25 @@ def register(user: UserCreate, db: Session = Depends(get_db), current_user = Dep
 def get_me(current_user: User = Depends(get_current_user)):
     return current_user
 
+# ---------- FCM Token registration ----------
+class FCMToken(BaseModel):
+    token: str
+
+@app.post("/user/fcm_token")
+def register_fcm_token(data: FCMToken, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    current_user.fcm_token = data.token
+    db.commit()
+    return {"message": "Token saved"}
+
+# ---------- Defect Types ----------
+@app.get("/defect_types")
+def get_defect_types(line: Optional[str] = None, db: Session = Depends(get_db)):
+    """Return available defect types, optionally filtered by line."""
+    query = db.query(DefectType)
+    if line:
+        query = query.filter(DefectType.line == line)
+    return [{"id": dt.id, "name": dt.name, "severity": dt.severity, "line": dt.line} for dt in query.all()]
+
 # ---------- Coils ----------
 @app.post("/coils", response_model=CoilOut)
 def create_coil(coil: CoilCreate, db: Session = Depends(get_db), current_user = Depends(get_current_user)):
@@ -115,15 +148,52 @@ def read_coils(skip: int = 0, limit: int = 100, db: Session = Depends(get_db), c
         coils = []
     return coils
 
-# ---------- Inspections ----------
+# ---------- Inspections (with defect details) ----------
 @app.post("/inspections", response_model=InspectionOut)
 def create_inspection(inspection: InspectionCreate, db: Session = Depends(get_db), current_user = Depends(get_current_user)):
     if current_user.role == 'inspector':
         raise HTTPException(status_code=403, detail="Not authorized")
-    db_inspection = Inspection(**inspection.dict(), created_by=current_user.id)
+    db_inspection = Inspection(
+        coil_id=inspection.coil_id,
+        inspector_id=inspection.inspector_id,
+        inspection_start=inspection.inspection_start,
+        inspection_end=inspection.inspection_end,
+        fatigue_score_post=inspection.fatigue_score_post,
+        missed_defects_estimated=inspection.missed_defects_estimated,
+        created_by=current_user.id
+    )
     db.add(db_inspection)
+    db.flush()   # to get db_inspection.id
+
+    # Save defect details
+    for d in inspection.defects:
+        db_defect = InspectionDefect(
+            inspection_id=db_inspection.id,
+            defect_type_id=d.defect_type_id,
+            position_m=d.position_m,
+            quantity=d.quantity
+        )
+        db.add(db_defect)
+
     db.commit()
     db.refresh(db_inspection)
+
+    # Send push notification if fatigue > 8
+    if db_inspection.fatigue_score_post and db_inspection.fatigue_score_post > 8:
+        inspector_user = db.query(User).filter(User.inspector_id == db_inspection.inspector_id).first()
+        if inspector_user and inspector_user.fcm_token:
+            try:
+                message = messaging.Message(
+                    notification=messaging.Notification(
+                        title="Fatigue Alert",
+                        body=f"Your fatigue score is {db_inspection.fatigue_score_post}. Take a break!",
+                    ),
+                    token=inspector_user.fcm_token,
+                )
+                messaging.send(message)
+            except Exception as e:
+                print(f"FCM send error: {e}")
+
     return db_inspection
 
 @app.get("/inspections", response_model=List[InspectionOut])
@@ -200,7 +270,7 @@ def export_results(current_user: User = Depends(get_current_user), db: Session =
         inspections = db.query(Inspection).filter(Inspection.inspector_id == current_user.inspector_id).all()
         inspectors = db.query(Inspector).filter(Inspector.inspector_id == current_user.inspector_id).all()
 
-    # Convert to DataFrames for AI engine (optional)
+    # Convert to DataFrames for AI engine
     coils_df = pd.DataFrame([c.__dict__ for c in coils]) if coils else pd.DataFrame()
     inspections_df = pd.DataFrame([i.__dict__ for i in inspections]) if inspections else pd.DataFrame()
     inspectors_df = pd.DataFrame([ins.__dict__ for ins in inspectors]) if inspectors else pd.DataFrame()
@@ -212,7 +282,6 @@ def export_results(current_user: User = Depends(get_current_user), db: Session =
     wb = Workbook()
     default_sheet = wb.active
     wb.remove(default_sheet)
-    #no_grid(wb.active)   # optional
 
     # Build styled sheets
     build_dashboard(wb, coils, inspections, inspectors, line_stats)
@@ -222,12 +291,11 @@ def export_results(current_user: User = Depends(get_current_user), db: Session =
     build_inspector_calc(wb, line_stats)
     build_change_log(wb, len(coils))
 
-    # Add AI sheets (A1‑A10) using your existing engine (if available)
+    # Add AI sheets (A1‑A10) using existing engine
     try:
         from ai_engine import add_ai_sheets_to_workbook
         wb = add_ai_sheets_to_workbook(wb, coils_df, inspections_df, inspectors_df, line_stats, avail_insp=len(inspectors))
     except Exception as e:
-        # If AI sheets fail, add an error sheet for debugging (optional)
         err_ws = wb.create_sheet("AI Error")
         err_ws.append(["Error", str(e)])
         print(f"AI sheets error: {e}")
@@ -246,13 +314,11 @@ def export_results(current_user: User = Depends(get_current_user), db: Session =
 # ---------- Filtered AI JSON endpoints for Flutter app ----------
 @app.get("/api/a1/forecast")
 def get_a1_forecast(current_user: User = Depends(get_current_user)):
-    """Global 24‑hour demand forecast (for UA)"""
     forecast = [{"hour": i, "defects": round(i * 0.5, 2)} for i in range(1, 25)]
     return forecast
 
 @app.get("/api/a1/forecast/line")
 def get_a1_forecast_by_line(line: str, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    """Return forecast for a specific line. Accessible only to UA or line admin of that line."""
     if current_user.role != 'ua' and current_user.line != line:
         raise HTTPException(status_code=403, detail="Not authorized for this line")
     coils = db.query(Coil).filter(Coil.line == line).all()
@@ -266,13 +332,11 @@ def get_a1_forecast_by_line(line: str, current_user: User = Depends(get_current_
 
 @app.get("/api/a4/fatigue_predict")
 def get_a4_fatigue_predict(current_user: User = Depends(get_current_user)):
-    """Global 12‑hour fatigue prediction (for UA and line admins)"""
     pred = [{"hour": i, "fatigue": round(5 + i * 0.2, 1)} for i in range(1, 13)]
     return pred
 
 @app.get("/api/a4/fatigue_predict/inspector")
 def get_fatigue_for_inspector(inspector_id: str, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    """Return fatigue prediction for a specific inspector."""
     if current_user.role != 'ua' and current_user.inspector_id != inspector_id:
         raise HTTPException(status_code=403, detail="Not authorized")
     inspections = db.query(Inspection).filter(Inspection.inspector_id == inspector_id).order_by(Inspection.inspection_start).all()
@@ -283,12 +347,12 @@ def get_fatigue_for_inspector(inspector_id: str, current_user: User = Depends(ge
         pred = [{"hour": i+1, "fatigue": round(min(10, last_fatigue + i * 0.1), 1)} for i in range(12)]
     return pred
 
+# ---------- Admin user management ----------
 @app.get("/admin/users")
 def list_users(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     if current_user.role != 'ua':
         raise HTTPException(status_code=403, detail="Not authorized")
     users = db.query(User).all()
-    # Exclude hashed_password from response
     return [{"id": u.id, "email": u.email, "role": u.role, "line": u.line, "inspector_id": u.inspector_id, "name": u.name} for u in users]
 
 @app.delete("/admin/users/{user_id}")
