@@ -187,44 +187,31 @@ def build_coil_detail(wb, coils, inspections):
     title_merge(ws, "COIL-BY-COIL INSPECTION DETAIL", 1, 10)
     hrow(ws, 2, ["Coil ID","Line","Length (m)","Speed (m/s)","Defect Count","Defects/km","W_l (s/m)","Inspector","Duration (min)","Fatigue Score"])
     
-    # Build a mapping from coil id to the corresponding inspection (assuming one inspection per coil)
-    # If multiple inspections exist for a coil, we take the first (or you can decide to show average, but reference shows one)
-    insp_by_coil = {}
-    for insp in inspections:
-        if insp.coil_id not in insp_by_coil:
-            insp_by_coil[insp.coil_id] = insp
+    # Build a mapping from coil id to inspection (assumes one inspection per coil)
+    insp_by_coil = {insp.coil_id: insp for insp in inspections}
     
     r = 3
     for i, c in enumerate(coils):
-        # Compute Defects/km
-        defects_km = (c.defect_count / (c.length_m / 1000)) if c.length_m and c.length_m > 0 else 0
+        # Defects/km
+        defects_km = (c.defect_count / (c.length_m / 1000)) if c.length_m else 0
         defects_km_rounded = round(defects_km, 4)
         
-        # Find inspection for this coil
         insp = insp_by_coil.get(c.id)
         if insp:
             inspector = insp.inspector_id
-            # Duration in minutes
-            if insp.inspection_start and insp.inspection_end:
-                duration = (insp.inspection_end - insp.inspection_start).total_seconds() / 60.0
-                duration_rounded = round(duration, 1)
-            else:
-                duration_rounded = 0
-            fatigue = insp.fatigue_score_post if insp.fatigue_score_post else 0
-            # W_l (s/m) = (duration_min * 60) / length_m
-            if c.length_m and c.length_m > 0:
-                wl = (duration_rounded * 60) / c.length_m if duration_rounded else 0
-                wl_rounded = round(wl, 4)
-            else:
-                wl_rounded = 0
+            duration = (insp.inspection_end - insp.inspection_start).total_seconds() / 60.0 if insp.inspection_start and insp.inspection_end else 0
+            duration_rounded = round(duration, 1)
+            fatigue = insp.fatigue_score_post or 0
+            wl = (duration_rounded * 60) / c.length_m if c.length_m else 0
+            wl_rounded = round(wl, 4)
         else:
             inspector = ""
             duration_rounded = 0
             fatigue = 0
             wl_rounded = 0
         
-        drow(ws, r, [c.coil_id, c.line, c.length_m, c.speed_mps, c.defect_count, defects_km_rounded,
-                     wl_rounded, inspector, duration_rounded, fatigue],
+        drow(ws, r, [c.coil_id, c.line, c.length_m, c.speed_mps, c.defect_count,
+                     defects_km_rounded, wl_rounded, inspector, duration_rounded, fatigue],
              bg=LT_GRY if i%2==0 else WHITE)
         r += 1
 

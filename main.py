@@ -200,7 +200,7 @@ def export_results(current_user: User = Depends(get_current_user), db: Session =
         inspections = db.query(Inspection).filter(Inspection.inspector_id == current_user.inspector_id).all()
         inspectors = db.query(Inspector).filter(Inspector.inspector_id == current_user.inspector_id).all()
 
-    # Convert to DataFrames for AI engine
+    # Convert to DataFrames for AI engine (optional)
     coils_df = pd.DataFrame([c.__dict__ for c in coils]) if coils else pd.DataFrame()
     inspections_df = pd.DataFrame([i.__dict__ for i in inspections]) if inspections else pd.DataFrame()
     inspectors_df = pd.DataFrame([ins.__dict__ for ins in inspectors]) if inspectors else pd.DataFrame()
@@ -208,11 +208,11 @@ def export_results(current_user: User = Depends(get_current_user), db: Session =
     # Compute line statistics (respects filtered coils)
     line_stats = compute_line_stats(coils, inspections)
 
-    # Create workbook and remove the default sheet (we'll build all sheets from scratch)
+    # Create workbook and remove default sheet
     wb = Workbook()
     default_sheet = wb.active
-    wb.remove(default_sheet)   # remove the empty sheet created by default
-    no_grid(wb.active)         # optional: hide gridlines for the first sheet we'll add
+    wb.remove(default_sheet)
+    no_grid(wb.active)   # optional
 
     # Build styled sheets
     build_dashboard(wb, coils, inspections, inspectors, line_stats)
@@ -222,7 +222,7 @@ def export_results(current_user: User = Depends(get_current_user), db: Session =
     build_inspector_calc(wb, line_stats)
     build_change_log(wb, len(coils))
 
-    # Add AI sheets (A1‑A10) using your existing engine
+    # Add AI sheets (A1‑A10) using your existing engine (if available)
     try:
         from ai_engine import add_ai_sheets_to_workbook
         wb = add_ai_sheets_to_workbook(wb, coils_df, inspections_df, inspectors_df, line_stats, avail_insp=len(inspectors))
