@@ -13,4 +13,5 @@ werkzeug
 numpy
 pandas
 firebase-admin
+fpdf2
 
